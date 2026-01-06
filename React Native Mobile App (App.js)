@@ -1,0 +1,652 @@
+// App.js - React Native Mobile App
+import React, { useState, useEffect } from 'react';
+import {
+  SafeAreaView,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+  TextInput,
+  TouchableOpacity,
+  ActivityIndicator,
+  Alert,
+  Platform,
+  RefreshControl,
+} from 'react-native';
+import { Provider, useDispatch, useSelector } from 'react-redux';
+import { store } from './store';
+
+const API_URL = 'http://10.0.2.2:5000/api'; // Android Emulator
+// const API_URL = 'http://localhost:5000/api'; // iOS Simulator
+// const API_URL = 'http://YOUR_IP:5000/api'; // Physical Device
+
+// ==================== Main App Component ====================
+function SurveyApp() {
+  const [surveys, setSurveys] = useState([]);
+  const [currentSurvey, setCurrentSurvey] = useState(null);
+  const [answers, setAnswers] = useState({});
+  const [loading, setLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+
+  useEffect(() => {
+    fetchSurveys();
+  }, []);
+
+  const fetchSurveys = async () => {
+    try {
+      setLoading(true);
+      const response = await fetch(`${API_URL}/surveys/active`);
+      const data = await response.json();
+      
+      if (data.success) {
+        setSurveys(data.data);
+      }
+    } catch (error) {
+      Alert.alert('Error', 'Failed to fetch surveys. Please check your connection.');
+      console.error('Fetch error:', error);
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  };
+
+  const onRefresh = () => {
+    setRefreshing(true);
+    fetchSurveys();
+  };
+
+  const startSurvey = (survey) => {
+    setCurrentSurvey(survey);
+    setAnswers({});
+  };
+
+  const updateAnswer = (questionId, value) => {
+    setAnswers({ ...answers, [questionId]: value });
+  };
+
+  const toggleCheckbox = (questionId, option) => {
+    const currentAnswers = answers[questionId] || [];
+    const newAnswers = currentAnswers.includes(option)
+      ? currentAnswers.filter(a => a !== option)
+      : [...currentAnswers, option];
+    setAnswers({ ...answers, [questionId]: newAnswers });
+  };
+
+  const submitSurvey = async () => {
+    // Validate required questions
+    const requiredQuestions = currentSurvey.questions.filter(q => q.required);
+    const unanswered = requiredQuestions.find(q => !answers[q.id]);
+    
+    if (unanswered) {
+      Alert.alert('Required Question', 'Please answer all required questions');
+      return;
+    }
+
+    try {
+      setLoading(true);
+      const response = await fetch(`${API_URL}/responses`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          surveyId: currentSurvey._id,
+          answers: answers,
+          deviceInfo: {
+            platform: Platform.OS,
+            version: Platform.Version,
+          }
+        })
+      });
+
+      const data = await response.json();
+      
+      if (data.success) {
+        Alert.alert(
+          'Success!',
+          'Your response has been submitted successfully.',
+          [{ text: 'OK', onPress: () => {
+            setCurrentSurvey(null);
+            setAnswers({});
+          }}]
+        );
+      }
+    } catch (error) {
+      Alert.alert('Error', 'Failed to submit response. Please try again.');
+      console.error('Submit error:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (loading && !currentSurvey) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <View style={styles.centerContainer}>
+          <ActivityIndicator size="large" color="#4F46E5" />
+          <Text style={styles.loadingText}>Loading surveys...</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  if (currentSurvey) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <ScrollView style={styles.scrollView}>
+          <View style={styles.header}>
+            <Text style={styles.title}>{currentSurvey.title}</Text>
+            <Text style={styles.description}>{currentSurvey.description}</Text>
+          </View>
+
+          <View style={styles.questionsContainer}>
+            {currentSurvey.questions.map((question, idx) => (
+              <View key={question.id} style={styles.questionCard}>
+                <Text style={styles.questionNumber}>Question {idx + 1}</Text>
+                <Text style={styles.questionText}>
+                  {question.question}
+                  {question.required && <Text style={styles.required}> *</Text>}
+                </Text>
+
+                {question.type === 'multiple-choice' && (
+                  <View style={styles.optionsContainer}>
+                    {question.options.map((option, optIdx) => (
+                      <TouchableOpacity
+                        key={optIdx}
+                        style={[
+                          styles.radioButton,
+                          answers[question.id] === option && styles.radioButtonSelected
+                        ]}
+                        onPress={() => updateAnswer(question.id, option)}
+                      >
+                        <View style={[
+                          styles.radioCircle,
+                          answers[question.id] === option && styles.radioCircleSelected
+                        ]} />
+                        <Text style={styles.optionText}>{option}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                )}
+
+                {question.type === 'checkbox' && (
+                  <View style={styles.optionsContainer}>
+                    {question.options.map((option, optIdx) => (
+                      <TouchableOpacity
+                        key={optIdx}
+                        style={[
+                          styles.checkboxButton,
+                          (answers[question.id] || []).includes(option) && styles.checkboxButtonSelected
+                        ]}
+                        onPress={() => toggleCheckbox(question.id, option)}
+                      >
+                        <View style={[
+                          styles.checkbox,
+                          (answers[question.id] || []).includes(option) && styles.checkboxSelected
+                        ]}>
+                          {(answers[question.id] || []).includes(option) && (
+                            <Text style={styles.checkmark}>✓</Text>
+                          )}
+                        </View>
+                        <Text style={styles.optionText}>{option}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                )}
+
+                {question.type === 'text' && (
+                  <TextInput
+                    style={styles.textInput}
+                    multiline
+                    numberOfLines={4}
+                    placeholder="Enter your answer..."
+                    value={answers[question.id] || ''}
+                    onChangeText={(text) => updateAnswer(question.id, text)}
+                  />
+                )}
+
+                {question.type === 'rating' && (
+                  <View style={styles.ratingContainer}>
+                    {[1, 2, 3, 4, 5].map(rating => (
+                      <TouchableOpacity
+                        key={rating}
+                        style={[
+                          styles.ratingButton,
+                          answers[question.id] === rating && styles.ratingButtonSelected
+                        ]}
+                        onPress={() => updateAnswer(question.id, rating)}
+                      >
+                        <Text style={[
+                          styles.ratingText,
+                          answers[question.id] === rating && styles.ratingTextSelected
+                        ]}>
+                          {rating}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                )}
+
+                {question.type === 'boolean' && (
+                  <View style={styles.booleanContainer}>
+                    <TouchableOpacity
+                      style={[
+                        styles.booleanButton,
+                        answers[question.id] === true && styles.booleanButtonSelected
+                      ]}
+                      onPress={() => updateAnswer(question.id, true)}
+                    >
+                      <Text style={[
+                        styles.booleanText,
+                        answers[question.id] === true && styles.booleanTextSelected
+                      ]}>
+                        Yes
+                      </Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[
+                        styles.booleanButton,
+                        answers[question.id] === false && styles.booleanButtonSelected
+                      ]}
+                      onPress={() => updateAnswer(question.id, false)}
+                    >
+                      <Text style={[
+                        styles.booleanText,
+                        answers[question.id] === false && styles.booleanTextSelected
+                      ]}>
+                        No
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                )}
+              </View>
+            ))}
+          </View>
+
+          <View style={styles.buttonContainer}>
+            <TouchableOpacity
+              style={styles.submitButton}
+              onPress={submitSurvey}
+              disabled={loading}
+            >
+              {loading ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <Text style={styles.submitButtonText}>Submit Survey</Text>
+              )}
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.cancelButton}
+              onPress={() => setCurrentSurvey(null)}
+              disabled={loading}
+            >
+              <Text style={styles.cancelButtonText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </ScrollView>
+      </SafeAreaView>
+    );
+  }
+
+  return (
+    <SafeAreaView style={styles.container}>
+      <View style={styles.headerBar}>
+        <Text style={styles.appTitle}>📊 Survey App</Text>
+        <Text style={styles.subtitle}>Take surveys and share your feedback</Text>
+      </View>
+
+      <ScrollView
+        style={styles.scrollView}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+        }
+      >
+        {surveys.length === 0 ? (
+          <View style={styles.emptyContainer}>
+            <Text style={styles.emptyText}>No active surveys available</Text>
+            <Text style={styles.emptySubtext}>Pull down to refresh</Text>
+          </View>
+        ) : (
+          <View style={styles.surveysContainer}>
+            {surveys.map(survey => (
+              <View key={survey._id} style={styles.surveyCard}>
+                <View style={styles.surveyHeader}>
+                  <Text style={styles.surveyTitle}>{survey.title}</Text>
+                  <View style={styles.badge}>
+                    <Text style={styles.badgeText}>
+                      {survey.questions.length} Questions
+                    </Text>
+                  </View>
+                </View>
+                
+                <Text style={styles.surveyDescription} numberOfLines={2}>
+                  {survey.description}
+                </Text>
+
+                <TouchableOpacity
+                  style={styles.takeSurveyButton}
+                  onPress={() => startSurvey(survey)}
+                >
+                  <Text style={styles.takeSurveyButtonText}>Take Survey →</Text>
+                </TouchableOpacity>
+              </View>
+            ))}
+          </View>
+        )}
+      </ScrollView>
+    </SafeAreaView>
+  );
+}
+
+// ==================== STYLES ====================
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: '#F8FAFC',
+  },
+  centerContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  loadingText: {
+    marginTop: 16,
+    fontSize: 16,
+    color: '#64748B',
+  },
+  headerBar: {
+    backgroundColor: '#4F46E5',
+    padding: 24,
+    paddingTop: Platform.OS === 'ios' ? 60 : 24,
+  },
+  appTitle: {
+    fontSize: 28,
+    fontWeight: 'bold',
+    color: '#fff',
+    marginBottom: 4,
+  },
+  subtitle: {
+    fontSize: 14,
+    color: '#E0E7FF',
+  },
+  scrollView: {
+    flex: 1,
+  },
+  header: {
+    backgroundColor: '#4F46E5',
+    padding: 24,
+    paddingTop: Platform.OS === 'ios' ? 60 : 24,
+  },
+  title: {
+    fontSize: 26,
+    fontWeight: 'bold',
+    color: '#fff',
+    marginBottom: 8,
+  },
+  description: {
+    fontSize: 16,
+    color: '#E0E7FF',
+    lineHeight: 24,
+  },
+  surveysContainer: {
+    padding: 16,
+  },
+  surveyCard: {
+    backgroundColor: '#fff',
+    borderRadius: 16,
+    padding: 20,
+    marginBottom: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  surveyHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    marginBottom: 12,
+  },
+  surveyTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#1E293B',
+    flex: 1,
+    marginRight: 12,
+  },
+  badge: {
+    backgroundColor: '#EEF2FF',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 12,
+  },
+  badgeText: {
+    fontSize: 12,
+    color: '#4F46E5',
+    fontWeight: '600',
+  },
+  surveyDescription: {
+    fontSize: 14,
+    color: '#64748B',
+    marginBottom: 16,
+    lineHeight: 20,
+  },
+  takeSurveyButton: {
+    backgroundColor: '#4F46E5',
+    padding: 14,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  takeSurveyButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  emptyContainer: {
+    padding: 48,
+    alignItems: 'center',
+  },
+  emptyText: {
+    fontSize: 18,
+    color: '#64748B',
+    fontWeight: '600',
+    marginBottom: 8,
+  },
+  emptySubtext: {
+    fontSize: 14,
+    color: '#94A3B8',
+  },
+  questionsContainer: {
+    padding: 16,
+  },
+  questionCard: {
+    backgroundColor: '#fff',
+    borderRadius: 16,
+    padding: 20,
+    marginBottom: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  questionNumber: {
+    fontSize: 12,
+    color: '#4F46E5',
+    fontWeight: '600',
+    marginBottom: 8,
+    textTransform: 'uppercase',
+  },
+  questionText: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#1E293B',
+    marginBottom: 16,
+    lineHeight: 26,
+  },
+  required: {
+    color: '#EF4444',
+  },
+  optionsContainer: {
+    gap: 12,
+  },
+  radioButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 16,
+    backgroundColor: '#F8FAFC',
+    borderRadius: 12,
+    borderWidth: 2,
+    borderColor: '#E2E8F0',
+  },
+  radioButtonSelected: {
+    backgroundColor: '#EEF2FF',
+    borderColor: '#4F46E5',
+  },
+  radioCircle: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    borderWidth: 2,
+    borderColor: '#CBD5E1',
+    marginRight: 12,
+  },
+  radioCircleSelected: {
+    borderColor: '#4F46E5',
+    backgroundColor: '#4F46E5',
+  },
+  checkboxButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 16,
+    backgroundColor: '#F8FAFC',
+    borderRadius: 12,
+    borderWidth: 2,
+    borderColor: '#E2E8F0',
+  },
+  checkboxButtonSelected: {
+    backgroundColor: '#EEF2FF',
+    borderColor: '#4F46E5',
+  },
+  checkbox: {
+    width: 24,
+    height: 24,
+    borderRadius: 6,
+    borderWidth: 2,
+    borderColor: '#CBD5E1',
+    marginRight: 12,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  checkboxSelected: {
+    backgroundColor: '#4F46E5',
+    borderColor: '#4F46E5',
+  },
+  checkmark: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: 'bold',
+  },
+  optionText: {
+    fontSize: 16,
+    color: '#1E293B',
+    flex: 1,
+  },
+  textInput: {
+    backgroundColor: '#F8FAFC',
+    borderWidth: 2,
+    borderColor: '#E2E8F0',
+    borderRadius: 12,
+    padding: 16,
+    fontSize: 16,
+    color: '#1E293B',
+    textAlignVertical: 'top',
+  },
+  ratingContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  ratingButton: {
+    flex: 1,
+    aspectRatio: 1,
+    backgroundColor: '#F8FAFC',
+    borderWidth: 2,
+    borderColor: '#E2E8F0',
+    borderRadius: 12,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  ratingButtonSelected: {
+    backgroundColor: '#4F46E5',
+    borderColor: '#4F46E5',
+  },
+  ratingText: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: '#64748B',
+  },
+  ratingTextSelected: {
+    color: '#fff',
+  },
+  booleanContainer: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  booleanButton: {
+    flex: 1,
+    padding: 20,
+    backgroundColor: '#F8FAFC',
+    borderWidth: 2,
+    borderColor: '#E2E8F0',
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  booleanButtonSelected: {
+    backgroundColor: '#4F46E5',
+    borderColor: '#4F46E5',
+  },
+  booleanText: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#64748B',
+  },
+  booleanTextSelected: {
+    color: '#fff',
+  },
+  buttonContainer: {
+    padding: 16,
+    gap: 12,
+  },
+  submitButton: {
+    backgroundColor: '#10B981',
+    padding: 18,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  submitButtonText: {
+    color: '#fff',
+    fontSize: 18,
+    fontWeight: 'bold',
+  },
+  cancelButton: {
+    backgroundColor: '#F1F5F9',
+    padding: 18,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  cancelButtonText: {
+    color: '#64748B',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+});
+
+// ==================== ROOT APP WITH PROVIDER ====================
+export default function App() {
+  return (
+    <Provider store={store}>
+      <SurveyApp />
+    </Provider>
+  );
+}
