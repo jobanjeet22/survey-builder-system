@@ -1,0 +1,502 @@
+// server.js - Complete Backend Server
+const express = require('express');
+const mongoose = require('mongoose');
+const cors = require('cors');
+const bodyParser = require('body-parser');
+
+const app = express();
+
+// Middleware
+app.use(cors());
+app.use(bodyParser.json());
+app.use(bodyParser.urlencoded({ extended: true }));
+
+// MongoDB Connection
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/surveyapp';
+
+mongoose.connect(MONGODB_URI, {
+  useNewUrlParser: true,
+  useUnifiedTopology: true,
+})
+.then(() => console.log('✅ MongoDB Connected Successfully'))
+.catch(err => console.error('❌ MongoDB Connection Error:', err));
+
+// ==================== MONGOOSE SCHEMAS ====================
+
+// Survey Schema
+const surveySchema = new mongoose.Schema({
+  title: { type: String, required: true },
+  description: { type: String },
+  questions: [{
+    id: String,
+    type: { 
+      type: String, 
+      enum: ['multiple-choice', 'checkbox', 'text', 'rating', 'boolean'],
+      required: true 
+    },
+    question: { type: String, required: true },
+    options: [String],
+    required: { type: Boolean, default: false }
+  }],
+  isActive: { type: Boolean, default: true },
+  createdAt: { type: Date, default: Date.now },
+  updatedAt: { type: Date, default: Date.now }
+});
+
+const Survey = mongoose.model('Survey', surveySchema);
+
+// Response Schema
+const responseSchema = new mongoose.Schema({
+  surveyId: { 
+    type: mongoose.Schema.Types.ObjectId, 
+    ref: 'Survey',
+    required: true 
+  },
+  answers: {
+    type: Map,
+    of: mongoose.Schema.Types.Mixed
+  },
+  deviceInfo: {
+    platform: String,
+    version: String,
+    deviceId: String
+  },
+  submittedAt: { type: Date, default: Date.now }
+});
+
+const Response = mongoose.model('Response', responseSchema);
+
+// ==================== API ROUTES ====================
+
+// Health Check
+app.get('/api/health', (req, res) => {
+  res.json({ 
+    status: 'OK', 
+    message: 'Survey API Server Running',
+    timestamp: new Date().toISOString()
+  });
+});
+
+// ==================== SURVEY ROUTES ====================
+
+// Get all surveys
+app.get('/api/surveys', async (req, res) => {
+  try {
+    const surveys = await Survey.find().sort({ createdAt: -1 });
+    res.json({ success: true, data: surveys });
+  } catch (error) {
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error fetching surveys', 
+      error: error.message 
+    });
+  }
+});
+
+// Get active surveys (for mobile app)
+app.get('/api/surveys/active', async (req, res) => {
+  try {
+    const surveys = await Survey.find({ isActive: true }).sort({ createdAt: -1 });
+    res.json({ success: true, data: surveys });
+  } catch (error) {
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error fetching active surveys', 
+      error: error.message 
+    });
+  }
+});
+
+// Get single survey by ID
+app.get('/api/surveys/:id', async (req, res) => {
+  try {
+    const survey = await Survey.findById(req.params.id);
+    if (!survey) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Survey not found' 
+      });
+    }
+    res.json({ success: true, data: survey });
+  } catch (error) {
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error fetching survey', 
+      error: error.message 
+    });
+  }
+});
+
+// Create new survey
+app.post('/api/surveys', async (req, res) => {
+  try {
+    const { title, description, questions, isActive } = req.body;
+    
+    if (!title || !questions || questions.length === 0) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Title and at least one question are required' 
+      });
+    }
+
+    const survey = new Survey({
+      title,
+      description,
+      questions,
+      isActive: isActive !== undefined ? isActive : true
+    });
+
+    await survey.save();
+    res.status(201).json({ 
+      success: true, 
+      message: 'Survey created successfully', 
+      data: survey 
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error creating survey', 
+      error: error.message 
+    });
+  }
+});
+
+// Update survey
+app.put('/api/surveys/:id', async (req, res) => {
+  try {
+    const { title, description, questions, isActive } = req.body;
+    
+    const survey = await Survey.findByIdAndUpdate(
+      req.params.id,
+      { 
+        title, 
+        description, 
+        questions, 
+        isActive,
+        updatedAt: Date.now()
+      },
+      { new: true, runValidators: true }
+    );
+
+    if (!survey) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Survey not found' 
+      });
+    }
+
+    res.json({ 
+      success: true, 
+      message: 'Survey updated successfully', 
+      data: survey 
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error updating survey', 
+      error: error.message 
+    });
+  }
+});
+
+// Delete survey
+app.delete('/api/surveys/:id', async (req, res) => {
+  try {
+    const survey = await Survey.findByIdAndDelete(req.params.id);
+    
+    if (!survey) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Survey not found' 
+      });
+    }
+
+    // Also delete all responses for this survey
+    await Response.deleteMany({ surveyId: req.params.id });
+
+    res.json({ 
+      success: true, 
+      message: 'Survey deleted successfully' 
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error deleting survey', 
+      error: error.message 
+    });
+  }
+});
+
+// Toggle survey active status
+app.patch('/api/surveys/:id/toggle', async (req, res) => {
+  try {
+    const survey = await Survey.findById(req.params.id);
+    
+    if (!survey) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Survey not found' 
+      });
+    }
+
+    survey.isActive = !survey.isActive;
+    survey.updatedAt = Date.now();
+    await survey.save();
+
+    res.json({ 
+      success: true, 
+      message: `Survey ${survey.isActive ? 'activated' : 'deactivated'} successfully`, 
+      data: survey 
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error toggling survey status', 
+      error: error.message 
+    });
+  }
+});
+
+// ==================== RESPONSE ROUTES ====================
+
+// Submit survey response
+app.post('/api/responses', async (req, res) => {
+  try {
+    const { surveyId, answers, deviceInfo } = req.body;
+
+    if (!surveyId || !answers) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Survey ID and answers are required' 
+      });
+    }
+
+    // Check if survey exists
+    const survey = await Survey.findById(surveyId);
+    if (!survey) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Survey not found' 
+      });
+    }
+
+    const response = new Response({
+      surveyId,
+      answers,
+      deviceInfo
+    });
+
+    await response.save();
+    res.status(201).json({ 
+      success: true, 
+      message: 'Response submitted successfully', 
+      data: response 
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error submitting response', 
+      error: error.message 
+    });
+  }
+});
+
+// Get all responses for a survey
+app.get('/api/surveys/:id/responses', async (req, res) => {
+  try {
+    const responses = await Response.find({ surveyId: req.params.id })
+      .sort({ submittedAt: -1 });
+    
+    res.json({ 
+      success: true, 
+      data: responses,
+      count: responses.length
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error fetching responses', 
+      error: error.message 
+    });
+  }
+});
+
+// Get analytics for a survey
+app.get('/api/surveys/:id/analytics', async (req, res) => {
+  try {
+    const survey = await Survey.findById(req.params.id);
+    if (!survey) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Survey not found' 
+      });
+    }
+
+    const responses = await Response.find({ surveyId: req.params.id });
+    
+    const analytics = {
+      totalResponses: responses.length,
+      questions: []
+    };
+
+    survey.questions.forEach(question => {
+      const questionAnalytics = {
+        id: question.id,
+        question: question.question,
+        type: question.type,
+        data: {}
+      };
+
+      if (question.type === 'multiple-choice' || question.type === 'checkbox') {
+        const optionCounts = {};
+        question.options.forEach(opt => optionCounts[opt] = 0);
+
+        responses.forEach(response => {
+          const answer = response.answers.get(question.id);
+          if (Array.isArray(answer)) {
+            answer.forEach(a => {
+              if (optionCounts[a] !== undefined) optionCounts[a]++;
+            });
+          } else if (answer && optionCounts[answer] !== undefined) {
+            optionCounts[answer]++;
+          }
+        });
+
+        questionAnalytics.data = Object.entries(optionCounts).map(([name, value]) => ({
+          name,
+          value
+        }));
+      } else if (question.type === 'rating') {
+        const ratings = responses
+          .map(r => r.answers.get(question.id))
+          .filter(r => r !== undefined && r !== null);
+        
+        const sum = ratings.reduce((acc, val) => acc + val, 0);
+        questionAnalytics.data = {
+          average: ratings.length > 0 ? (sum / ratings.length).toFixed(2) : 0,
+          total: ratings.length,
+          distribution: ratings.reduce((acc, val) => {
+            acc[val] = (acc[val] || 0) + 1;
+            return acc;
+          }, {})
+        };
+      } else if (question.type === 'text') {
+        questionAnalytics.data = responses
+          .map(r => r.answers.get(question.id))
+          .filter(Boolean);
+      } else if (question.type === 'boolean') {
+        const boolCounts = { Yes: 0, No: 0 };
+        responses.forEach(response => {
+          const answer = response.answers.get(question.id);
+          if (answer === true || answer === 'Yes') boolCounts.Yes++;
+          else if (answer === false || answer === 'No') boolCounts.No++;
+        });
+        questionAnalytics.data = Object.entries(boolCounts).map(([name, value]) => ({
+          name,
+          value
+        }));
+      }
+
+      analytics.questions.push(questionAnalytics);
+    });
+
+    res.json({ success: true, data: analytics });
+  } catch (error) {
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error generating analytics', 
+      error: error.message 
+    });
+  }
+});
+
+// Get all responses (for admin dashboard)
+app.get('/api/responses', async (req, res) => {
+  try {
+    const responses = await Response.find()
+      .populate('surveyId', 'title')
+      .sort({ submittedAt: -1 });
+    
+    res.json({ 
+      success: true, 
+      data: responses,
+      count: responses.length
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error fetching responses', 
+      error: error.message 
+    });
+  }
+});
+
+// Get dashboard statistics
+app.get('/api/dashboard/stats', async (req, res) => {
+  try {
+    const totalSurveys = await Survey.countDocuments();
+    const activeSurveys = await Survey.countDocuments({ isActive: true });
+    const totalResponses = await Response.countDocuments();
+    
+    const recentResponses = await Response.find()
+      .sort({ submittedAt: -1 })
+      .limit(10)
+      .populate('surveyId', 'title');
+
+    res.json({ 
+      success: true, 
+      data: {
+        totalSurveys,
+        activeSurveys,
+        inactiveSurveys: totalSurveys - activeSurveys,
+        totalResponses,
+        averageResponsesPerSurvey: totalSurveys > 0 ? 
+          (totalResponses / totalSurveys).toFixed(2) : 0,
+        recentResponses
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error fetching dashboard stats', 
+      error: error.message 
+    });
+  }
+});
+
+// ==================== ERROR HANDLING ====================
+
+// 404 Handler
+app.use((req, res) => {
+  res.status(404).json({ 
+    success: false, 
+    message: 'Route not found' 
+  });
+});
+
+// Global Error Handler
+app.use((err, req, res, next) => {
+  console.error('Server Error:', err);
+  res.status(500).json({ 
+    success: false, 
+    message: 'Internal server error', 
+    error: err.message 
+  });
+});
+
+// ==================== START SERVER ====================
+
+const PORT = process.env.PORT || 5000;
+
+app.listen(PORT, () => {
+  console.log(`
+╔════════════════════════════════════════╗
+║   🚀 Survey API Server Running         ║
+║   📡 Port: ${PORT}                      ║
+║   🌐 http://localhost:${PORT}          ║
+║   📊 MongoDB: Connected                ║
+╚════════════════════════════════════════╝
+  `);
+});
+
+module.exports = app;
